@@ -1,0 +1,11 @@
+# Logstash Configuration
+http.host: "0.0.0.0"
+xpack.monitoring.elasticsearch.hosts: ["http://elasticsearch:9200"]
+
+# Pipeline Configuration
+pipeline.workers: 2
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
+
+# Logging
+log.level: info
