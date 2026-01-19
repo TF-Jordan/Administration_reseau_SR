@@ -1,0 +1,235 @@
+# ==============================================================================
+# Docker Compose Override for Development Environment
+# ==============================================================================
+# This file extends docker-compose.yml with development-specific configurations:
+# - Hot-reload with mounted source code volumes
+# - Debug mode enabled
+# - Verbose logging
+# - Reduced resource constraints
+# - Optional monitoring services
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   OR
+#   make dev
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # API - Development Mode
+  # ============================================================================
+  api:
+    build:
+      target: development  # Use development stage from Dockerfile
+      cache_from:
+        - ar-as-api:latest
+
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - RELOAD=true  # Enable hot-reload for uvicorn
+
+    volumes:
+      # Mount source code for hot-reload
+      - ./src:/app/src:rw
+      - ./scripts:/app/scripts:rw
+      - ./main.py:/app/main.py:rw
+
+    command: >
+      uvicorn src.api.app:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level debug
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ============================================================================
+  # Celery Worker - Development Mode
+  # ============================================================================
+  celery-worker:
+    build:
+      target: worker
+      cache_from:
+        - ar-as-worker:latest
+
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+
+    volumes:
+      # Mount source code for hot-reload
+      - ./src:/app/src:rw
+
+    command: >
+      celery -A src.modules.module3_orchestration.celery_app worker
+      --loglevel=debug
+      --concurrency=2
+      --max-tasks-per-child=100
+
+    deploy:
+      replicas: 1  # Only 1 worker in dev
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ============================================================================
+  # Celery Beat - Development Mode
+  # ============================================================================
+  celery-beat:
+    build:
+      target: beat
+
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+
+    volumes:
+      - ./src:/app/src:rw
+
+    command: >
+      celery -A src.modules.module3_orchestration.celery_app beat
+      --loglevel=debug
+      --pidfile=/tmp/celerybeat.pid
+
+  # ============================================================================
+  # Flower - Development Mode
+  # ============================================================================
+  flower:
+    build:
+      target: flower
+
+    volumes:
+      - ./src:/app/src:ro
+
+    environment:
+      - ENVIRONMENT=development
+
+  # ============================================================================
+  # PostgreSQL - Development Mode
+  # ============================================================================
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD=postgres  # Simple password for dev
+
+    ports:
+      - "5432:5432"  # Expose port for external tools (pgAdmin, DBeaver, etc.)
+
+  # ============================================================================
+  # Redis - Development Mode
+  # ============================================================================
+  redis:
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --loglevel debug
+
+    ports:
+      - "6379:6379"  # Expose port for Redis CLI
+
+  # ============================================================================
+  # Qdrant - Development Mode
+  # ============================================================================
+  qdrant:
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=DEBUG
+
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+
+  # ============================================================================
+  # Elasticsearch - Optional in Dev (comment out to disable)
+  # ============================================================================
+  elasticsearch:
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"  # Reduced memory for dev
+      - xpack.security.enabled=false
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M  # Reduced from 2G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # ============================================================================
+  # Kibana - Optional in Dev
+  # ============================================================================
+  kibana:
+    environment:
+      - LOGGING_QUIET=false
+      - LOGGING_VERBOSE=true
+
+  # ============================================================================
+  # APM Server - Optional in Dev
+  # ============================================================================
+  apm-server:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ============================================================================
+  # Logstash - Optional in Dev (can be disabled)
+  # ============================================================================
+  # Uncomment to disable logstash in development:
+  # logstash:
+  #   profiles:
+  #     - monitoring
+
+  # ============================================================================
+  # Filebeat - Optional in Dev (can be disabled)
+  # ============================================================================
+  # Uncomment to disable filebeat in development:
+  # filebeat:
+  #   profiles:
+  #     - monitoring
+
+  # ============================================================================
+  # Metricbeat - Optional in Dev (can be disabled)
+  # ============================================================================
+  # Uncomment to disable metricbeat in development:
+  # metricbeat:
+  #   profiles:
+  #     - monitoring
+
+# ==============================================================================
+# Notes for Development
+# ==============================================================================
+# 1. Hot-reload is enabled for API and workers via mounted volumes
+# 2. Debug logging is activated across all services
+# 3. Resource limits are relaxed for faster iteration
+# 4. Database ports are exposed for external tools
+# 5. Only 1 Celery worker replica (vs 2 in production)
+# 6. Monitoring services have reduced resources
+#
+# To disable monitoring stack (save resources):
+#   Uncomment the 'profiles' sections for logstash, filebeat, metricbeat
+#
+# To start without monitoring:
+#   make dev
+#   (monitoring services won't start with profiles set)
+# ==============================================================================

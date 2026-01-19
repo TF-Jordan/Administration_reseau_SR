@@ -1,0 +1,49 @@
+# ==============================================================================
+# Docker Compose - Build Fix with Host Network
+# ==============================================================================
+# Use this file if you have DNS resolution issues during build
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.build-fix.yml build
+#
+# This configuration adds --network=host to all builds to bypass DNS issues
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      network: host  # Fix DNS issues during build
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+      network: host  # Fix DNS issues during build
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: beat
+      network: host  # Fix DNS issues during build
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: flower
+      network: host  # Fix DNS issues during build
+      args:
+        BUILDKIT_INLINE_CACHE: 1

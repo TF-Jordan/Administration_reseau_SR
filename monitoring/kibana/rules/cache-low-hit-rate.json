@@ -1,0 +1,31 @@
+{
+  "name": "Cache Low Hit Rate Alert",
+  "tags": ["cache", "performance", "redis"],
+  "rule_type_id": ".es-query",
+  "params": {
+    "index": ["recommendation-*-logs-*"],
+    "timeField": "timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"must\":[{\"range\":{\"timestamp\":{\"gte\":\"now-10m\"}}},{\"term\":{\"metric_type\":\"cache_operation\"}},{\"term\":{\"cache_hit\":false}}]}}}",
+    "threshold": [100],
+    "thresholdComparator": ">",
+    "timeWindowSize": 10,
+    "timeWindowUnit": "m"
+  },
+  "consumer": "alerts",
+  "schedule": {
+    "interval": "10m"
+  },
+  "enabled": true,
+  "actions": [
+    {
+      "id": "log_action",
+      "group": "default",
+      "params": {
+        "level": "warn",
+        "message": "High cache miss rate: {{context.hits}} cache misses in last 10 minutes. Cache may need optimization."
+      }
+    }
+  ],
+  "notify_when": "onActionGroupChange",
+  "throttle": "30m"
+}

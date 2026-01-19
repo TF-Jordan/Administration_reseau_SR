@@ -1,0 +1,696 @@
+# ==============================================================================
+# Docker Compose Configuration for AR_AS Recommendation System
+# Production-ready with monitoring, health checks, and resource limits
+# ==============================================================================
+
+version: '3.8'
+
+# ==============================================================================
+# SERVICES
+# ==============================================================================
+services:
+  # ============================================================================
+  # CORE APPLICATION SERVICES
+  # ============================================================================
+
+  api:
+    build:
+      context: .
+      target: api
+      dockerfile: Dockerfile
+      cache_from:
+        - ar-as-api:latest
+    image: ar-as-api:latest
+    container_name: ar-as-api
+    hostname: api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      # Application
+      - APP_NAME=${APP_NAME:-AR_AS Recommendation System}
+      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - API_PREFIX=${API_PREFIX:-/api/v1}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+
+      # Database
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-recommendation_db}
+
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=0
+
+      # Qdrant
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_VEHICLES=${QDRANT_COLLECTION_VEHICLES:-vehicles}
+
+      # Celery
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+      # Models
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-paraphrase-multilingual-mpnet-base-v2}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-768}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=json
+
+      # Monitoring - Elastic APM
+      - APM_ENABLED=${APM_ENABLED:-true}
+      - APM_SERVER_URL=http://apm-server:8200
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      apm-server:
+        condition: service_healthy
+
+    volumes:
+      # Model volumes (read-only for security)
+      - ${SENTIMENT_MODEL_PATH:-./models/distil-camembert-sentiment}:/app/src/modules/module1_sentiment/models:ro
+      - ${EMBEDDING_MODEL_PATH:-./models/paraphrase-multilingual-mpnet-base-v2}:/app/src/modules/module2_recommendation/models:ro
+      # Logs
+      - api-logs:/app/logs
+
+    networks:
+      - ar-as-network
+
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=api,environment=${ENVIRONMENT:-production}"
+
+    labels:
+      - "com.ar-as.service=api"
+      - "com.ar-as.environment=${ENVIRONMENT:-production}"
+
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+  # ============================================================================
+  # CELERY WORKERS
+  # ============================================================================
+
+  celery-worker:
+    build:
+      context: .
+      target: worker
+      dockerfile: Dockerfile
+      cache_from:
+        - ar-as-worker:latest
+    image: ar-as-worker:latest
+    container_name: ar-as-worker
+    hostname: worker
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-recommendation_db}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=json
+      - APM_ENABLED=${APM_ENABLED:-true}
+      - APM_SERVER_URL=http://apm-server:8200
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+    volumes:
+      - ${SENTIMENT_MODEL_PATH:-./models/distil-camembert-sentiment}:/app/src/modules/module1_sentiment/models:ro
+      - ${EMBEDDING_MODEL_PATH:-./models/paraphrase-multilingual-mpnet-base-v2}:/app/src/modules/module2_recommendation/models:ro
+      - worker-logs:/app/logs
+
+    networks:
+      - ar-as-network
+
+    restart: unless-stopped
+
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=worker,environment=${ENVIRONMENT:-production}"
+
+    labels:
+      - "com.ar-as.service=worker"
+      - "com.ar-as.environment=${ENVIRONMENT:-production}"
+
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+  # ============================================================================
+  # CELERY BEAT (SCHEDULER)
+  # ============================================================================
+
+  celery-beat:
+    build:
+      context: .
+      target: beat
+      dockerfile: Dockerfile
+    image: ar-as-beat:latest
+    container_name: ar-as-beat
+    hostname: beat
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=json
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    volumes:
+      - beat-schedule:/tmp
+
+    networks:
+      - ar-as-network
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+    labels:
+      - "com.ar-as.service=beat"
+
+  # ============================================================================
+  # FLOWER (CELERY MONITORING)
+  # ============================================================================
+
+  flower:
+    build:
+      context: .
+      target: flower
+      dockerfile: Dockerfile
+    image: ar-as-flower:latest
+    container_name: ar-as-flower
+    hostname: flower
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+
+    networks:
+      - ar-as-network
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+    labels:
+      - "com.ar-as.service=flower"
+
+  # ============================================================================
+  # DATA STORES
+  # ============================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: ar-as-postgres
+    hostname: postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-recommendation_db}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-recommendation_db}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    labels:
+      - "com.ar-as.service=database"
+
+  redis:
+    image: redis:7-alpine
+    container_name: ar-as-redis
+    hostname: redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+    labels:
+      - "com.ar-as.service=cache"
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: ar-as-qdrant
+    hostname: qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    labels:
+      - "com.ar-as.service=vector-database"
+
+  # ============================================================================
+  # MONITORING - ELK STACK + APM + METRICBEAT
+  # ============================================================================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: ar-as-elasticsearch
+    hostname: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=ar-as-cluster
+      - node.name=ar-as-node-1
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q 'green\\|yellow'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+    labels:
+      - "com.ar-as.service=elasticsearch"
+
+  apm-server:
+    image: docker.elastic.co/apm/apm-server:8.11.0
+    container_name: ar-as-apm-server
+    hostname: apm-server
+    ports:
+      - "${APM_PORT:-8200}:8200"
+    environment:
+      - output.elasticsearch.hosts=["http://elasticsearch:9200"]
+      - apm-server.host=0.0.0.0:8200
+      - apm-server.rum.enabled=true
+      - setup.kibana.host=kibana:5601
+      - apm-server.kibana.enabled=true
+      - apm-server.kibana.host=kibana:5601
+      - logging.level=info
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8200/ | grep -q 'ok'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 5
+
+    labels:
+      - "com.ar-as.service=apm"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: ar-as-logstash
+    hostname: logstash
+    ports:
+      - "${LOGSTASH_BEATS_PORT:-5044}:5044"
+      - "${LOGSTASH_TCP_PORT:-5000}:5000"
+      - "${LOGSTASH_MONITORING_PORT:-9600}:9600"
+    volumes:
+      - ./monitoring/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./monitoring/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - logstash-data:/usr/share/logstash/data
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9600/ | grep -q 'ok'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+    labels:
+      - "com.ar-as.service=logstash"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: ar-as-kibana
+    hostname: kibana
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_NAME=ar-as-kibana
+      - XPACK_APM_SERVICEMAPENABLED=true
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:-aG7g2F4Pp9tEkMwXz6Lv8nQ1sYc0defgh}
+      - TELEMETRY_ENABLED=false
+    volumes:
+      - ./monitoring/kibana/dashboards:/usr/share/kibana/dashboards:ro
+      - kibana-data:/usr/share/kibana/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status | grep -q 'available'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+    labels:
+      - "com.ar-as.service=kibana"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.0
+    container_name: ar-as-filebeat
+    hostname: filebeat
+    user: root
+    volumes:
+      - ./monitoring/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - filebeat-data:/usr/share/filebeat/data
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - LOGSTASH_HOSTS=logstash:5044
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      logstash:
+        condition: service_healthy
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+    command: filebeat -e -strict.perms=false
+
+    labels:
+      - "com.ar-as.service=filebeat"
+
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:8.11.0
+    container_name: ar-as-metricbeat
+    hostname: metricbeat
+    user: root
+    volumes:
+      - ./monitoring/metricbeat/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /proc:/hostfs/proc:ro
+      - /:/hostfs:ro
+      - metricbeat-data:/usr/share/metricbeat/data
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-recommendation_db}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - ar-as-network
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+    command: metricbeat -e -strict.perms=false
+
+    labels:
+      - "com.ar-as.service=metricbeat"
+
+# ==============================================================================
+# NETWORKS
+# ==============================================================================
+networks:
+  ar-as-network:
+    driver: bridge
+    name: ar-as-network
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.0.0/16
+
+# ==============================================================================
+# VOLUMES
+# ==============================================================================
+volumes:
+  # Application
+  api-logs:
+    name: ar-as-api-logs
+  worker-logs:
+    name: ar-as-worker-logs
+  beat-schedule:
+    name: ar-as-beat-schedule
+
+  # Data Stores
+  postgres-data:
+    name: ar-as-postgres-data
+  redis-data:
+    name: ar-as-redis-data
+  qdrant-data:
+    name: ar-as-qdrant-data
+  qdrant-snapshots:
+    name: ar-as-qdrant-snapshots
+
+  # Monitoring
+  elasticsearch-data:
+    name: ar-as-elasticsearch-data
+  logstash-data:
+    name: ar-as-logstash-data
+  kibana-data:
+    name: ar-as-kibana-data
+  filebeat-data:
+    name: ar-as-filebeat-data
+  metricbeat-data:
+    name: ar-as-metricbeat-data

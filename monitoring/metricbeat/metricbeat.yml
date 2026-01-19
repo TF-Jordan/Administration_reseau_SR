@@ -1,0 +1,146 @@
+###################### Metricbeat Configuration ########################
+
+# This file is for monitoring infrastructure services:
+# - Redis (cache performance)
+# - PostgreSQL (database metrics)
+# - Docker (container metrics)
+
+metricbeat.modules:
+
+#------------------------------- Redis Module -------------------------------
+- module: redis
+  metricsets:
+    - info          # General info and stats
+    - keyspace      # Keyspace statistics
+  period: 10s
+  hosts: ["redis:6379"]
+  enabled: true
+
+  # Additional fields
+  fields:
+    service: redis
+    environment: ${ENVIRONMENT:production}
+  fields_under_root: true
+
+#----------------------------- PostgreSQL Module ----------------------------
+- module: postgresql
+  metricsets:
+    - database      # Database statistics
+    - bgwriter      # Background writer statistics
+    - activity      # Active connections and queries
+  period: 10s
+  hosts: ["postgres://postgres:5432?sslmode=disable"]
+  username: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+  enabled: true
+
+  # Additional fields
+  fields:
+    service: postgresql
+    environment: ${ENVIRONMENT:production}
+  fields_under_root: true
+
+#------------------------------- Docker Module ------------------------------
+- module: docker
+  metricsets:
+    - container     # Container metrics (CPU, memory, network)
+    - cpu           # CPU stats per container
+    - diskio        # Disk I/O per container
+    - healthcheck   # Container health status
+    - info          # Docker daemon info
+    - memory        # Memory stats per container
+    - network       # Network stats per container
+  period: 10s
+  hosts: ["unix:///var/run/docker.sock"]
+  enabled: true
+
+  # Additional fields
+  fields:
+    service: docker
+    environment: ${ENVIRONMENT:production}
+  fields_under_root: true
+
+#------------------------------- System Module ------------------------------
+- module: system
+  period: 10s
+  metricsets:
+    - cpu             # CPU usage
+    - load            # CPU load averages
+    - memory          # Memory usage
+    - network         # Network I/O
+    - process         # Per-process metrics
+    - process_summary # Process count summary
+    - socket_summary  # Socket statistics
+    - filesystem      # Filesystem usage
+    - fsstat          # Filesystem statistics
+  enabled: true
+
+  # Additional fields
+  fields:
+    service: system
+    environment: ${ENVIRONMENT:production}
+  fields_under_root: true
+
+  # Process matching (for application monitoring)
+  process.include_top_n:
+    by_cpu: 5
+    by_memory: 5
+
+  # Specific processes to monitor
+  processes: ['.*']
+
+#================================ Outputs =====================================
+
+#-------------------------- Elasticsearch Output ------------------------------
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "metricbeat-%{[agent.version]}-%{+yyyy.MM.dd}"
+
+  # Performance tuning
+  bulk_max_size: 50
+  worker: 1
+
+#================================ Processors ==================================
+
+processors:
+  # Add host metadata
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+
+  # Add Docker metadata (when available)
+  - add_docker_metadata: ~
+
+  # Add cloud metadata (if running in cloud)
+  - add_cloud_metadata: ~
+
+  # Drop unnecessary fields
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.id", "ecs.version"]
+      ignore_missing: true
+
+#================================ Logging =====================================
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/metricbeat
+  name: metricbeat.log
+  keepfiles: 7
+  permissions: 0644
+
+#================================ Setup =======================================
+
+# Setup Kibana
+setup.kibana:
+  host: "kibana:5601"
+
+# Setup index template
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 1
+  index.refresh_interval: "5s"
+
+# Enable ILM (Index Lifecycle Management)
+setup.ilm.enabled: true
+setup.ilm.rollover_alias: "metricbeat"
+setup.ilm.pattern: "{now/d}-000001"

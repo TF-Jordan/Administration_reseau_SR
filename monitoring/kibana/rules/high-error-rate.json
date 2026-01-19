@@ -1,0 +1,31 @@
+{
+  "name": "High Error Rate Alert",
+  "tags": ["errors", "api", "production"],
+  "rule_type_id": ".es-query",
+  "params": {
+    "index": ["recommendation-*-logs-*"],
+    "timeField": "timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"must\":[{\"range\":{\"timestamp\":{\"gte\":\"now-5m\"}}},{\"term\":{\"level\":\"ERROR\"}}]}}}",
+    "threshold": [10],
+    "thresholdComparator": ">",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m"
+  },
+  "consumer": "alerts",
+  "schedule": {
+    "interval": "5m"
+  },
+  "enabled": true,
+  "actions": [
+    {
+      "id": "log_action",
+      "group": "default",
+      "params": {
+        "level": "error",
+        "message": "High error rate detected: {{context.hits}} errors in last 5 minutes. Check Kibana for details."
+      }
+    }
+  ],
+  "notify_when": "onActionGroupChange",
+  "throttle": "15m"
+}
